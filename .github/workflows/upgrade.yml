@@ -1,0 +1,38 @@
+name: Auto Sync Upstream Release
+
+on:
+  schedule:
+    - cron: '0 18 * * *'
+  workflow_dispatch:
+
+jobs:
+  sync_release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.PAT }}
+      - name: Upgrade
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          LOCAL_LATEST_TAG=$(git tag --sort=-v:refname | head -n 1)
+          git tag -l | xargs -r git tag -d
+
+          git remote add upstream "https://github.com/lexiforest/curl-impersonate.git"
+          git fetch upstream --tags
+          REMOTE_LATEST_TAG=$(git tag --sort=-v:refname | head -n 1)
+
+          if [ "$LOCAL_LATEST_TAG" == "$REMOTE_LATEST_TAG" ]; then echo "已是最新，无需更新！";exit 0; fi
+          echo "发现新版本$REMOTE_LATEST_TAG，开始更新！"
+
+          git checkout -B main origin/main
+          git rebase refs/tags/$REMOTE_LATEST_TAG
+
+          git push -f origin main
+          git tag -l | xargs -r git tag -d
+          git tag $REMOTE_LATEST_TAG
+          git push origin $REMOTE_LATEST_TAG
