@@ -1,0 +1,82 @@
+name: Auto Sync Upstream Release
+
+on:
+  schedule:
+    - cron: '0 18 * * *'
+  workflow_dispatch:
+
+jobs:
+  sync_release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.PAT }}
+      - name: Upgrade
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          LOCAL_LATEST_TAG=$(git tag --sort=-v:refname | head -n 1)
+          git tag -l | xargs -r git tag -d
+
+          GITHUB_REPO="lexiforest/curl-impersonate"
+          GITHUB_API="https://api.github.com/repos/$GITHUB_REPO/releases/latest"
+          LATEST_DATA=$(curl -s -f --retry 10 --retry-all-errors --retry-delay 3 "$GITHUB_API")
+          REMOTE_LATEST_TAG=$(echo "$LATEST_DATA" | jq -r '.tag_name')
+
+          if [ "$LOCAL_LATEST_TAG" == "$REMOTE_LATEST_TAG" ]; then echo "已是最新，无需更新！";exit 0; fi
+          echo "发现新版本$REMOTE_LATEST_TAG，开始更新！"
+
+          git remote add upstream "https://github.com/$GITHUB_REPO.git"
+          git fetch upstream tag $REMOTE_LATEST_TAG
+
+          cp .github/workflows/upgrade.yml /tmp/upgrade.yml
+          git reset --hard $REMOTE_LATEST_TAG
+          cp /tmp/upgrade.yml .github/workflows/upgrade.yml
+          git add .github/workflows/upgrade.yml
+          git commit -m "添加自动python修改变基更新action"
+
+          find .github/workflows -type f ! -name 'upgrade.yml' ! -name 'build.yml' -delete
+          python3 -c "
+          with open('.github/workflows/build.yml','r') as f: content=f.read()
+          # 1. 仅tag可触发action
+          position1=content.index('push:')
+          position2=content.index('tags:')
+          position1=content.index('\n',position1)
+          position2=content.rindex('\n',0,position2)
+          content=content[:position1]+content[position2:]
+          position1=content.index('- \"v*\"')
+          position2=content.index('permissions:')
+          position1=content.index('\n',position1)
+          position2=content.rindex('\n',0,position2)
+          content=content[:position1]+content[position2:]
+          # 2. 仅编译发布x86_64-linux-gnu
+          position1=content.index('matrix:')
+          position1=content.index('- ',position1)
+          position1=content.index('- ',position1+2)
+          position2=content.index('steps:')
+          position1=content.rindex('\n',0,position1)
+          position2=content.rindex('\n',0,position2)
+          content=content[:position1]+content[position2:]
+          # 3. 修改为非静态编译
+          position1=content.index('Run configure script')
+          position1=content.index('Linux',position1)
+          position1=content.index('--enable-static --disable-shared',position1)
+          position2=position1+33
+          content=content[:position1]+content[position2:]
+          # 4. 删除ios-xcframework
+          position1=content.index('ios-xcframework:')
+          position1=content.rindex('\n',0,position1)
+          content=content[:position1]
+          with open('.github/workflows/build.yml','w') as f: f.write(content)
+          "
+          git add -u
+          git commit -m "修改build.yml为非静态构建，且只构建发布linux x86_64 gnu，删除多余的jobs和action"
+
+          git push -f origin main
+          git tag -l | xargs -r git tag -d
+          git tag $REMOTE_LATEST_TAG
+          git push origin $REMOTE_LATEST_TAG
